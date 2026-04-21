@@ -1,22 +1,48 @@
 const express = require('express');
 const cors = require('cors');
+const https = require('https');
 
 const app = express();
 app.use(express.json({ limit: '50kb' }));
 app.use(cors());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-1.5-flash'; // free tier
+const GEMINI_MODEL = 'gemini-1.5-flash';
 
 if (!GEMINI_API_KEY) {
   console.error('ERROR: GEMINI_API_KEY environment variable not set');
   process.exit(1);
 }
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'CreatorLens API is running' });
 });
+
+function httpsPost(hostname, path, data) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(data);
+    const options = {
+      hostname,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(options, (res) => {
+      let raw = '';
+      res.on('data', chunk => raw += chunk);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(raw) }); }
+        catch (e) { resolve({ status: res.statusCode, body: raw }); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 app.post('/analyse', async (req, res) => {
   const { scrapedData } = req.body;
@@ -26,7 +52,6 @@ app.post('/analyse', async (req, res) => {
   const isYT = platform === 'youtube' || platform === 'youtube-studio';
 
   let contentSummary = `Platform: ${isYT ? 'YouTube' : 'Instagram'}\n`;
-
   if (isYT) {
     if (scrapedData.channelName) contentSummary += `Channel: ${scrapedData.channelName}\n`;
     if (scrapedData.videos?.length > 0) {
@@ -44,7 +69,7 @@ app.post('/analyse', async (req, res) => {
       scrapedData.posts.slice(0, 25).forEach((p, i) => { contentSummary += `${i+1}. ${String(p).substring(0, 200)}\n`; });
     }
     if (scrapedData.highlights?.length > 0) {
-      contentSummary += `\nHighlights: ${scrapedData.highlights.join(', ')}\n`;
+      contentSummary += `Highlights: ${scrapedData.highlights.join(', ')}\n`;
     }
   }
 
@@ -55,7 +80,7 @@ Scraped data:
 ${contentSummary}
 ---
 
-Return ONLY a valid JSON object, no markdown, no explanation:
+Return ONLY valid JSON, no markdown, no explanation:
 
 {
   "contentScore": <0-100>,
@@ -76,24 +101,17 @@ Return ONLY a valid JSON object, no markdown, no explanation:
 }`;
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
-      })
+    const path = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const result = await httpsPost('generativelanguage.googleapis.com', path, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
     });
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err?.error?.message || 'Gemini API error' });
+    if (result.status !== 200) {
+      return res.status(result.status).json({ error: result.body?.error?.message || 'Gemini API error' });
     }
 
-    const result = await response.json();
-    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const text = result.body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
 
     try {
@@ -101,7 +119,6 @@ Return ONLY a valid JSON object, no markdown, no explanation:
     } catch {
       res.status(500).json({ error: 'Failed to parse AI response' });
     }
-
   } catch (err) {
     console.error('Server error:', err);
     res.status(500).json({ error: 'Server error: ' + err.message });
