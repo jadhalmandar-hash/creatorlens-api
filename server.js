@@ -112,11 +112,28 @@ Return ONLY valid JSON, no markdown, no explanation:
     }
 
     const text = result.body?.choices?.[0]?.message?.content || '';
-    const clean = text.replace(/```json|```/g, '').trim();
-
+    
+    // Try multiple parsing strategies
+    let parsed = null;
+    
+    // Strategy 1: direct parse after stripping markdown
     try {
-      res.json(JSON.parse(clean));
-    } catch {
+      const clean = text.replace(/```json|```/g, '').trim();
+      parsed = JSON.parse(clean);
+    } catch {}
+    
+    // Strategy 2: extract JSON object with regex
+    if (!parsed) {
+      try {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) parsed = JSON.parse(match[0]);
+      } catch {}
+    }
+    
+    if (parsed) {
+      res.json(parsed);
+    } else {
+      console.error('Raw AI response:', text);
       res.status(500).json({ error: 'Failed to parse AI response' });
     }
   } catch (err) {
