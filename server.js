@@ -6,11 +6,10 @@ const app = express();
 app.use(express.json({ limit: '50kb' }));
 app.use(cors());
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-if (!GEMINI_API_KEY) {
-  console.error('ERROR: GEMINI_API_KEY environment variable not set');
+if (!GROQ_API_KEY) {
+  console.error('ERROR: GROQ_API_KEY environment variable not set');
   process.exit(1);
 }
 
@@ -18,17 +17,12 @@ app.get('/', (req, res) => {
   res.json({ status: 'CreatorLens API is running' });
 });
 
-function httpsPost(hostname, path, data) {
+function httpsPost(hostname, path, headers, data) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
     const options = {
-      hostname,
-      path,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
+      hostname, path, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers }
     };
     const req = https.request(options, (res) => {
       let raw = '';
@@ -101,17 +95,23 @@ Return ONLY valid JSON, no markdown, no explanation:
 }`;
 
   try {
-    const path = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-    const result = await httpsPost('generativelanguage.googleapis.com', path, {
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
-    });
+    const result = await httpsPost(
+      'api.groq.com',
+      '/openai/v1/chat/completions',
+      { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+      {
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1500
+      }
+    );
 
     if (result.status !== 200) {
-      return res.status(result.status).json({ error: result.body?.error?.message || 'Gemini API error' });
+      return res.status(result.status).json({ error: result.body?.error?.message || 'Groq API error' });
     }
 
-    const text = result.body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const text = result.body?.choices?.[0]?.message?.content || '';
     const clean = text.replace(/```json|```/g, '').trim();
 
     try {
