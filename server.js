@@ -6,34 +6,21 @@ const app = express();
 app.use(express.json({ limit: '50kb' }));
 app.use(cors());
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-1.5-flash';
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+if (!GROQ_API_KEY) { console.error('ERROR: GROQ_API_KEY not set'); process.exit(1); }
 
-if (!GEMINI_API_KEY) {
-  console.error('ERROR: GEMINI_API_KEY environment variable not set');
-  process.exit(1);
-}
+app.get('/', (req, res) => res.json({ status: 'CreatorLens API running' }));
 
-app.get('/', (req, res) => {
-  res.json({ status: 'CreatorLens API is running' });
-});
-
-// Native https request — works on ALL Node versions, no fetch needed
-function httpsPost(hostname, path, data) {
+function httpsPost(hostname, path, headers, data) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
     const options = {
-      hostname,
-      path,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
+      hostname, path, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers }
     };
     const req = https.request(options, (res) => {
       let raw = '';
-      res.on('data', chunk => raw += chunk);
+      res.on('data', c => raw += c);
       res.on('end', () => {
         try { resolve({ status: res.statusCode, body: JSON.parse(raw) }); }
         catch (e) { resolve({ status: res.statusCode, body: raw }); }
@@ -46,85 +33,89 @@ function httpsPost(hostname, path, data) {
 }
 
 app.post('/analyse', async (req, res) => {
-  const { scrapedData } = req.body;
-  if (!scrapedData) return res.status(400).json({ error: 'No scraped data provided' });
+  const { scrapedData: d } = req.body;
+  if (!d) return res.status(400).json({ error: 'No data' });
 
-  const platform = scrapedData.platform || 'unknown';
-  const isYT = platform === 'youtube' || platform === 'youtube-studio';
-
-  let contentSummary = `Platform: ${isYT ? 'YouTube' : 'Instagram'}\n`;
-  if (isYT) {
-    if (scrapedData.channelName) contentSummary += `Channel: ${scrapedData.channelName}\n`;
-    if (scrapedData.videos?.length > 0) {
-      contentSummary += `\nVideo titles:\n`;
-      scrapedData.videos.slice(0, 30).forEach((v, i) => { contentSummary += `${i+1}. ${v}\n`; });
-    }
-    if (scrapedData.rawSections?.length > 0) {
-      contentSummary += `\nPage content:\n${scrapedData.rawSections.slice(0, 40).join(' | ')}\n`;
-    }
-  } else {
-    if (scrapedData.username) contentSummary += `Username: @${scrapedData.username}\n`;
-    if (scrapedData.bio) contentSummary += `Bio: ${scrapedData.bio}\n`;
-    if (scrapedData.posts?.length > 0) {
-      contentSummary += `\nPost captions:\n`;
-      scrapedData.posts.slice(0, 25).forEach((p, i) => { contentSummary += `${i+1}. ${String(p).substring(0, 200)}\n`; });
-    }
-    if (scrapedData.highlights?.length > 0) {
-      contentSummary += `Highlights: ${scrapedData.highlights.join(', ')}\n`;
-    }
+  const isYT = d.platform === 'youtube' || d.platform === 'youtube-studio';
+  let summary = `Platform: ${isYT ? 'YouTube' : 'Instagram'}\n`;
+  if (d.username) summary += `Username: @${d.username}\n`;
+  if (d.fullName) summary += `Name: ${d.fullName}\n`;
+  if (d.bio) summary += `Bio: ${d.bio}\n`;
+  if (d.followers) summary += `Followers: ${d.followers}\n`;
+  if (d.totalPosts) summary += `Total posts: ${d.totalPosts}\n`;
+  if (d.posts?.length > 0) {
+    summary += `\nPost captions:\n`;
+    d.posts.slice(0, 20).forEach((p, i) => { summary += `${i+1}. ${String(p).substring(0, 200)}\n`; });
+  }
+  if (d.videos?.length > 0) {
+    summary += `\nVideo titles:\n`;
+    d.videos.slice(0, 20).forEach((v, i) => { summary += `${i+1}. ${v}\n`; });
   }
 
-  const prompt = `You are a world-class content strategist analysing a creator's ${isYT ? 'YouTube' : 'Instagram'} profile.
+  const prompt = `You are a content intelligence analyst. Analyse this creator's profile and return ONLY valid JSON.
 
-Scraped data:
+Profile data:
 ---
-${contentSummary}
+${summary}
 ---
 
-Return ONLY valid JSON, no markdown, no explanation:
-
+Return this exact JSON structure with no extra text:
 {
   "contentScore": <0-100>,
-  "scoreBreakdown": { "consistency": <0-100>, "variety": <0-100>, "clarity": <0-100> },
-  "voiceAnalysis": "<2-3 sentences on their unique style and tone>",
-  "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
-  "topTopics": ["<topic 1>", "<topic 2>", "<topic 3>", "<topic 4>", "<topic 5>"],
+  "scoreBreakdown": {"consistency": <0-100>, "variety": <0-100>, "clarity": <0-100>},
+  "voiceAnalysis": "<2-3 sentences on their unique style, tone, and what makes them distinct>",
+  "strengths": ["<strength>", "<strength>", "<strength>"],
+  "topTopics": ["<topic>", "<topic>", "<topic>", "<topic>", "<topic>"],
   "contentGaps": [
-    {"gap": "<title>", "explanation": "<why it matters>"},
-    {"gap": "<title>", "explanation": "<why it matters>"},
-    {"gap": "<title>", "explanation": "<why it matters>"}
+    {"gap": "<gap>", "explanation": "<why it matters>"},
+    {"gap": "<gap>", "explanation": "<why it matters>"},
+    {"gap": "<gap>", "explanation": "<why it matters>"}
   ],
   "viralIdeas": [
     {"title": "<title>", "hook": "<opening line>", "why": "<why it works for this creator>"},
     {"title": "<title>", "hook": "<opening line>", "why": "<why it works>"},
     {"title": "<title>", "hook": "<opening line>", "why": "<why it works>"}
+  ],
+  "similarCreators": [
+    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"},
+    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"},
+    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"}
   ]
-}`;
+}
+
+For similarCreators, suggest 3 real Instagram creators in the same niche as this creator.`;
 
   try {
-    const path = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-    const result = await httpsPost('generativelanguage.googleapis.com', path, {
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
-    });
+    const result = await httpsPost('api.groq.com', '/openai/v1/chat/completions',
+      { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+      {
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'You are a JSON API. Output only valid JSON, no markdown, no explanation.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7, max_tokens: 2000
+      }
+    );
 
     if (result.status !== 200) {
-      return res.status(result.status).json({ error: result.body?.error?.message || 'Gemini API error' });
+      return res.status(result.status).json({ error: result.body?.error?.message || 'Groq error' });
     }
 
-    const text = result.body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const clean = text.replace(/```json|```/g, '').trim();
+    const text = result.body?.choices?.[0]?.message?.content || '';
+    console.log('Raw:', text.substring(0, 150));
 
-    try {
-      res.json(JSON.parse(clean));
-    } catch {
-      res.status(500).json({ error: 'Failed to parse AI response' });
-    }
+    let parsed = null;
+    try { parsed = JSON.parse(text.replace(/```json|```/g, '').trim()); } catch {}
+    if (!parsed) { try { const m = text.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch {} }
+
+    if (parsed) return res.json(parsed);
+    res.status(500).json({ error: 'Parse failed: ' + text.substring(0, 100) });
   } catch (err) {
-    console.error('Server error:', err);
-    res.status(500).json({ error: 'Server error: ' + err.message });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`CreatorLens API running on port ${PORT}`));
+app.listen(PORT, () => console.log(`CreatorLens API on port ${PORT}`));
