@@ -32,58 +32,101 @@ function httpsPost(hostname, path, headers, data) {
   });
 }
 
+function detectFollowerTier(followers) {
+  if (followers < 10000) return 'nano (under 10K followers)';
+  if (followers < 100000) return 'micro (10K–100K followers)';
+  if (followers < 500000) return 'mid-tier (100K–500K followers)';
+  if (followers < 1000000) return 'macro (500K–1M followers)';
+  return 'mega (1M+ followers)';
+}
+
+function detectLanguage(bio, posts) {
+  const allText = (bio + ' ' + (posts || []).join(' ')).toLowerCase();
+  // Simple language hints
+  const tamilChars = /[\u0B80-\u0BFF]/.test(allText);
+  const kannadaChars = /[\u0C80-\u0CFF]/.test(allText);
+  const hindiChars = /[\u0900-\u097F]/.test(allText);
+  const teluguChars = /[\u0C00-\u0C7F]/.test(allText);
+  const malayalamChars = /[\u0D00-\u0D7F]/.test(allText);
+  
+  if (tamilChars) return 'Tamil';
+  if (kannadaChars) return 'Kannada';
+  if (hindiChars) return 'Hindi';
+  if (teluguChars) return 'Telugu';
+  if (malayalamChars) return 'Malayalam';
+  
+  // English keywords that suggest regional Indian content
+  if (allText.includes('tamil') || allText.includes('chennai') || allText.includes('tamilnadu')) return 'Tamil';
+  if (allText.includes('kannada') || allText.includes('bangalore') || allText.includes('bengaluru')) return 'Kannada';
+  if (allText.includes('telugu') || allText.includes('hyderabad')) return 'Telugu';
+  if (allText.includes('malayalam') || allText.includes('kerala')) return 'Malayalam';
+  if (allText.includes('hindi') || allText.includes('mumbai') || allText.includes('delhi')) return 'Hindi';
+  
+  return 'English';
+}
+
 app.post('/analyse', async (req, res) => {
   const { scrapedData: d } = req.body;
   if (!d) return res.status(400).json({ error: 'No data' });
 
-  const isYT = d.platform === 'youtube' || d.platform === 'youtube-studio';
-  let summary = `Platform: ${isYT ? 'YouTube' : 'Instagram'}\n`;
+  const followerTier = detectFollowerTier(d.followers || 0);
+  const language = detectLanguage(d.bio || '', d.posts || []);
+
+  let summary = `Platform: Instagram\n`;
   if (d.username) summary += `Username: @${d.username}\n`;
   if (d.fullName) summary += `Name: ${d.fullName}\n`;
   if (d.bio) summary += `Bio: ${d.bio}\n`;
-  if (d.followers) summary += `Followers: ${d.followers}\n`;
+  if (d.followers) summary += `Followers: ${d.followers} (${followerTier})\n`;
   if (d.totalPosts) summary += `Total posts: ${d.totalPosts}\n`;
   if (d.posts?.length > 0) {
-    summary += `\nPost captions:\n`;
+    summary += `\nRecent post captions:\n`;
     d.posts.slice(0, 20).forEach((p, i) => { summary += `${i+1}. ${String(p).substring(0, 200)}\n`; });
   }
-  if (d.videos?.length > 0) {
-    summary += `\nVideo titles:\n`;
-    d.videos.slice(0, 20).forEach((v, i) => { summary += `${i+1}. ${v}\n`; });
-  }
 
-  const prompt = `You are a content intelligence analyst. Analyse this creator's profile and return ONLY valid JSON.
+  const prompt = `You are a content intelligence analyst for Indian social media creators. Analyse this creator's profile carefully.
 
 Profile data:
 ---
 ${summary}
+Detected language: ${language}
+Follower tier: ${followerTier}
 ---
 
-Return this exact JSON structure with no extra text:
+Return ONLY this exact JSON with no extra text, no markdown:
+
 {
   "contentScore": <0-100>,
-  "scoreBreakdown": {"consistency": <0-100>, "variety": <0-100>, "clarity": <0-100>},
-  "voiceAnalysis": "<2-3 sentences on their unique style, tone, and what makes them distinct>",
-  "strengths": ["<strength>", "<strength>", "<strength>"],
-  "topTopics": ["<topic>", "<topic>", "<topic>", "<topic>", "<topic>"],
+  "scoreBreakdown": {
+    "consistency": <0-100>,
+    "variety": <0-100>,
+    "clarity": <0-100>
+  },
+  "voiceAnalysis": "<2-3 sentences describing their specific communication style, language, tone, and what makes them genuinely distinct from others in their niche>",
+  "strengths": ["<specific strength>", "<specific strength>", "<specific strength>"],
+  "topTopics": ["<specific topic>", "<specific topic>", "<specific topic>", "<specific topic>", "<specific topic>"],
   "contentGaps": [
-    {"gap": "<gap>", "explanation": "<why it matters>"},
-    {"gap": "<gap>", "explanation": "<why it matters>"},
-    {"gap": "<gap>", "explanation": "<why it matters>"}
+    {"gap": "<specific gap>", "explanation": "<actionable reason why this matters for THIS creator>"},
+    {"gap": "<specific gap>", "explanation": "<actionable reason>"},
+    {"gap": "<specific gap>", "explanation": "<actionable reason>"}
   ],
   "viralIdeas": [
-    {"title": "<title>", "hook": "<opening line>", "why": "<why it works for this creator>"},
-    {"title": "<title>", "hook": "<opening line>", "why": "<why it works>"},
-    {"title": "<title>", "hook": "<opening line>", "why": "<why it works>"}
+    {"title": "<specific title in their style>", "hook": "<opening line that matches their voice>", "why": "<specific reason this works for this exact creator>"},
+    {"title": "<specific title>", "hook": "<opening line>", "why": "<specific reason>"},
+    {"title": "<specific title>", "hook": "<opening line>", "why": "<specific reason>"}
   ],
   "similarCreators": [
-    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"},
-    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"},
-    {"name": "<Creator Name>", "handle": "@<handle>", "niche": "<their niche>"}
+    {"name": "<Real Creator Name>", "handle": "@<real_instagram_handle>", "niche": "<specific niche>", "size": "<follower count approx>"},
+    {"name": "<Real Creator Name>", "handle": "@<real_instagram_handle>", "niche": "<specific niche>", "size": "<follower count approx>"},
+    {"name": "<Real Creator Name>", "handle": "@<real_instagram_handle>", "niche": "<specific niche>", "size": "<follower count approx>"}
   ]
 }
 
-For similarCreators, suggest 3 real Instagram creators in the same niche as this creator.`;
+CRITICAL RULES FOR similarCreators:
+- The similar creators MUST be from the SAME language/region as this creator (${language} language creators)
+- They MUST be in the same or adjacent niche
+- They MUST be similar in size: ${followerTier} — do NOT suggest massive global creators if this is a small creator
+- Suggest REAL Indian regional creators, not global celebrities
+- If you cannot find real creators, suggest ones that definitely exist in that niche and tier`;
 
   try {
     const result = await httpsPost('api.groq.com', '/openai/v1/chat/completions',
@@ -91,10 +134,11 @@ For similarCreators, suggest 3 real Instagram creators in the same niche as this
       {
         model: 'llama-3.3-70b-versatile',
         messages: [
-          { role: 'system', content: 'You are a JSON API. Output only valid JSON, no markdown, no explanation.' },
+          { role: 'system', content: 'You are a JSON API that specialises in Indian creator economy. Output only valid JSON. Never add explanation or markdown.' },
           { role: 'user', content: prompt }
         ],
-        temperature: 0.7, max_tokens: 2000
+        temperature: 0.6,
+        max_tokens: 2000
       }
     );
 
@@ -103,14 +147,13 @@ For similarCreators, suggest 3 real Instagram creators in the same niche as this
     }
 
     const text = result.body?.choices?.[0]?.message?.content || '';
-    console.log('Raw:', text.substring(0, 150));
-
     let parsed = null;
     try { parsed = JSON.parse(text.replace(/```json|```/g, '').trim()); } catch {}
     if (!parsed) { try { const m = text.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch {} }
 
     if (parsed) return res.json(parsed);
-    res.status(500).json({ error: 'Parse failed: ' + text.substring(0, 100) });
+    console.error('Parse failed:', text.substring(0, 200));
+    res.status(500).json({ error: 'Parse failed' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
